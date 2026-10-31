@@ -10,7 +10,7 @@
  *
  * Everything is cached in localStorage so repeat lookups cost nothing.
  */
-import { classify, indexPackages, displayTitle, posterUrl } from './classify.js';
+import { classify, indexPackages, displayTitle, posterUrl, perMonth } from './classify.js';
 
 const RELAY = '';  // optional: 'https://onde-assistir.<you>.workers.dev'
 
@@ -48,7 +48,7 @@ const Q = {
     packages(country: BR, platform: WEB, includeAddons: true) {
       packageId clearName icon
       addonParent(country: BR, platform: WEB) { packageId clearName }
-      planOffers(country: BR, platform: WEB) { title retailPriceValue durationDays isTrial } } }`,
+      planOffers(country: BR, platform: WEB) { title retailPriceValue currency durationDays isTrial } } }`,
 };
 
 const TTL = {
@@ -248,6 +248,13 @@ function brl(v) {
   return 'R$ ' + (cents / 100).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+/** "a partir de R$ 29,90/mês", or the annual instalment when that is the only price. */
+function priceNote(r) {
+  if (r.monthly != null) return `a partir de ${brl(r.monthly)}/mês`;
+  if (r.yearly != null) return `${brl(r.yearly)}/mês no plano anual`;
+  return '';
+}
+
 function list(names = []) {
   if (names.length <= 1) return names.join('');
   return names.slice(0, -1).join(', ') + ' e ' + names[names.length - 1];
@@ -364,7 +371,7 @@ function rowHtml(r, bucket) {
   let detail = '', end = '';
 
   if (bucket === 'included') {
-    detail = [r.note, r.monthly != null ? `a partir de ${brl(r.monthly)}/mês` : ''].filter(Boolean).join(' · ');
+    detail = [r.note, priceNote(r)].filter(Boolean).join(' · ');
     end = leaving(r.leavingOn) || (r.quality ? `<span class="leave">${esc(r.quality)}</span>` : '');
   } else if (bucket === 'extra') {
     if (r.kind === 'plan') detail = r.note || 'Plano acima do básico';
@@ -372,8 +379,10 @@ function rowHtml(r, bucket) {
     else detail = `Canal no ${r.host ? r.host.name : 'serviço'}${r.trialDays ? ` · ${r.trialDays} dias grátis` : ''}`;
     if (r.leavingOn) detail += ` · ${leaving(r.leavingOn)}`;
     // A channel is paid on top of its host; plans and combos are the whole price.
+    if (r.monthly == null && r.yearly != null) detail += ' · no plano anual';
     const plus = r.kind === 'channel' && !r.comboPrice ? '+' : '';
-    end = r.monthly != null ? `<span class="price">${plus}${brl(r.monthly)}<small>/mês</small></span>` : '';
+    const p = perMonth(r);
+    end = p != null ? `<span class="price">${plus}${brl(p)}<small>/mês</small></span>` : '';
   } else if (bucket === 'free') {
     detail = 'Com anúncios';
     end = leaving(r.leavingOn);

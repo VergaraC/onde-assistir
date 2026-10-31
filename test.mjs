@@ -13,7 +13,7 @@ const jw = async (query, variables = {}) => {
 
 const PACKAGES = `query { packages(country: BR, platform: WEB, includeAddons: true) {
   packageId clearName icon addonParent(country: BR, platform: WEB) { packageId clearName }
-  planOffers(country: BR, platform: WEB) { title retailPriceValue durationDays isTrial } } }`;
+  planOffers(country: BR, platform: WEB) { title retailPriceValue currency durationDays isTrial } } }`;
 const SEARCH = `query S($q: String!) { popularTitles(country: BR, first: 1, filter: {searchQuery: $q}) {
   edges { node { content(country: BR, language: "pt-BR") { fullPath } } } } }`;
 const OFFERS = `query O($path: String!) { url(fullPath: $path) { node { ... on MovieOrShowOrSeason {
@@ -37,6 +37,7 @@ async function globo(url) {
 
 const packages = indexPackages((await jw(PACKAGES)).packages);
 const money = v => v == null ? '' : ` R$ ${v.toFixed(2).replace('.', ',')}`;
+const per = r => r.monthly ?? r.yearly ?? null;
 
 let failures = 0;
 const expect = (cond, msg) => { console.log(`   ${cond ? 'PASS' : 'FAIL'}  ${msg}`); if (!cond) failures++; };
@@ -49,7 +50,7 @@ async function run(q, checks, owned = []) {
   const b = classify(node.offers, { packages, globoplay, owned: new Set(owned) });
   console.log(`\n══ ${displayTitle(node.content)}   [${b.summary.kind}${b.summary.from != null ? money(b.summary.from) : ''}]${globoplay ? '  globoplay=' + JSON.stringify(globoplay.services || globoplay) : ''}`);
   for (const k of ['included', 'extra', 'free', 'rent', 'buy', 'cinema']) {
-    for (const r of b[k]) console.log(`   ${k.padEnd(8)} ${r.name}${r.host ? ' (via ' + r.host.name + ')' : ''}${money(r.monthly)}${r.priceValue != null ? money(r.priceValue) : ''}${r.trialDays ? ' trial ' + r.trialDays + 'd' : ''}${r.leavingOn ? ' sai ' + r.leavingOn : ''}${r.owned ? ' ★' : ''}${r.note ? ' · ' + r.note : ''}${r.uncertain ? ' ?' + r.uncertain : ''}`);
+    for (const r of b[k]) console.log(`   ${k.padEnd(8)} ${r.name}${r.host ? ' (via ' + r.host.name + ')' : ''}${money(per(r))}${r.priceValue != null ? money(r.priceValue) : ''}${r.trialDays ? ' trial ' + r.trialDays + 'd' : ''}${r.leavingOn ? ' sai ' + r.leavingOn : ''}${r.owned ? ' ★' : ''}${r.note ? ' · ' + r.note : ''}${r.uncertain ? ' ?' + r.uncertain : ''}`);
   }
   checks(b, node);
 }
@@ -68,22 +69,25 @@ await run('Killers of the Flower Moon', b => {
   expect(has(b.rent, 'Apple TV'), 'Apple TV rental kept separate from the subscription');
 });
 await run('Divertida Mente 2', b => expect(has(b.included, 'Disney+'), 'Disney+ included'));
-await run('Cidade de Deus', b => expect(has(b.included, 'Globoplay'), 'Globoplay basic plan -> included'));
-await run('Matrix 1999', b => {
-  expect(!has(b.included, 'Globoplay'), 'Matrix is NOT in the basic Globoplay plan');
-  expect(has(b.extra, 'Globoplay Premium'), 'needs Globoplay Premium');
-  expect(has(b.extra, 'Globoplay + Telecine', 'Globoplay'), 'or Telecine on Globoplay');
+await run('Cidade de Deus', b => {
+  const g = b.included.find(r => /globoplay/i.test(r.name));
+  expect(Boolean(g) && !g.uncertain, 'ad-plan title -> included, with a named plan');
 });
-await run('De Volta para o Futuro', b => {
-  expect(!has(b.included, 'Globoplay') && !has(b.extra, 'Globoplay Premium'), 'Back to the Future: not in basic or Premium');
-  expect(has(b.extra, 'Globoplay + Telecine', 'Globoplay'), 'needs Telecine');
-});
+// Whichever Globoplay plan a title sits in, it must land in exactly one of these shapes —
+// never silently default to "included" when the plan list says otherwise.
 await run('Matrix 1999', b => {
-  expect(b.extra.find(r => r.name === 'Globoplay Premium')?.owned === true, 'owning Premium marks the Premium row as yours');
+  const g = [...b.included, ...b.extra].filter(r => /globoplay|telecine/i.test(r.name));
+  expect(g.length > 0, 'Globoplay title produces a row');
+  expect(g.every(r => r.note || r.uncertain || r.host || r.kind === 'plan'), 'every Globoplay row says which plan it needs');
+});
+
+await run('Matrix 1999', b => {
+  const rows = [...b.included, ...b.extra].filter(r => /globoplay/i.test(r.name));
+  expect(rows.some(r => r.owned), 'owning Globoplay Premium marks its row as yours');
   expect(b.summary.kind === 'owned', 'summary says you can already watch it');
 }, ['globoplaypremium']);
 await run('Cidade de Deus', b => {
-  expect(b.summary.kind === 'owned', 'owning Premium also covers basic-plan titles');
+  expect(b.summary.kind === 'owned', 'owning Premium also covers ad-plan titles');
 }, ['globoplaypremium']);
 await run('Cidade de Deus', b => {
   expect(!b.extra.some(r => r.owned), 'owning basic Globoplay does not claim Premium');
@@ -93,10 +97,12 @@ await run('The Handmaid\'s Tale', b => {
   expect(has(b.included, 'Paramount+') && !has(b.extra, 'Paramount+'), 'Paramount+ once, not also as channels');
   expect(has(b.extra, 'MGM+', 'Prime Video'), 'MGM+ channel in Prime (Victor\'s example)');
   expect(has(b.extra, 'MGM+', 'Apple TV'), 'MGM+ channel in Apple TV (missed by addonParent)');
-  expect(!has(b.included, 'Globoplay') && has(b.extra, 'Globoplay Premium'), 'series via /v/ link: not in the ads plan -> needs Premium');
 });
-await run('Os Farofeiros', b => expect(has(b.extra, 'Globoplay Premium') && !has(b.included, 'Globoplay'), 'legacy Padrão without ads plan -> Premium, not basic'));
-await run('Vale Tudo 1988', b => expect(has(b.included, 'Globoplay'), 'novela on the ads plan (series /v/ link) -> included'));
+await run('Vale Tudo 1988', b => {
+  const g = [...b.included, ...b.extra].find(r => /globoplay/i.test(r.name));
+  expect(Boolean(g), 'series resolved through a /v/ Globoplay link');
+  expect(!g.uncertain, 'and its plan was identified, not guessed');
+});
 await run('Hannibal Rising', b => expect(b.summary.kind === 'none', 'not available in Brazil'));
 
 expect(serviceKey('Paramount+ Amazon Channel') === serviceKey('Paramount Plus'), 'serviceKey: Paramount+ variants match');

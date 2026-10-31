@@ -49,25 +49,45 @@ const KEY_ALIAS = {
   max: 'hbomax',
 };
 
-// Globoplay's own API names the plans that unlock a title. Only "Padrão com Anúncios" is the
-// basic plan sold today; "Padrão" (no ads) and "Globoplay" are legacy plans old subscribers keep.
-// A title that lists them but not "Padrão com Anúncios" is NOT in the plan a new subscriber gets.
-const GLOBO_ADS_BASE = 'Padrão com Anúncios';
-const GLOBO_LEGACY = new Set(['Padrão', 'Globoplay']);
+// Globoplay's own API names the plans that unlock a title. The ad-supported plan is the cheapest
+// one sold today; "Padrão" (no ads) and "Globoplay" are legacy plans existing subscribers keep.
+// Match on shape, not on an exact label: Globoplay renamed "Padrão com Anúncios" to "com anúncios"
+// in October 2026, and an exact-string check silently reported included titles as Premium-only.
 const GLOBO_PKG = 307;
+const isAdsPlan = n => /anuncio/.test(fold(n));
+const isPremiumPlan = n => /premium/.test(fold(n));
+const isTelecinePlan = n => /telecine/.test(fold(n));
+// Legacy labels on their own never mean "a new subscriber can watch this".
+const isLegacyPlan = n => ['padrao', 'globoplay'].includes(fold(n));
 
-// Fallback prices (BRL/month, checked 2026-09-13) for plans JustWatch doesn't price.
-export const GLOBO_PRICES = { base: 22.90, premium: 39.90, telecineCombo: 47.90 };
+// Globoplay's prices are not in any API we can read — JustWatch still served the pre-October
+// numbers weeks after they changed — so they are maintained here. `asOf` drives the staleness
+// warning in checkup.mjs; update both together.
+export const GLOBO_PRICES = {
+  asOf: '2026-10-30',
+  source: 'https://tecnoblog.net/noticias/globoplay-reformula-planos-confira-os-novos-recursos-e-precos/',
+  base: { monthly: 29.90, yearly: 19.90 },
+  premium: { monthly: 39.90, yearly: 24.90 },
+  telecineCombo: { monthly: null, yearly: 34.90 },
+};
 
 const QUALITY_RANK = { _4K: 4, HD: 3, SD: 2 };
 
-export function serviceKey(name) {
-  const s = String(name || '')
-    .replace(CHANNEL_SUFFIX, '')
+/** Monthly cost of a subscription row, falling back to the annual instalment when a plan
+ *  is only sold yearly (Globoplay + Telecine). Used for sorting and for "a partir de". */
+export const perMonth = r => r.monthly ?? r.yearly ?? null;
+
+/** Lowercase, strip accents and punctuation — so "com Anúncios" and "com anuncios" match. */
+function fold(name) {
+  return String(name || '')
     .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
     .toLowerCase()
     .replace(/\+/g, 'plus')
     .replace(/[^a-z0-9]/g, '');
+}
+
+export function serviceKey(name) {
+  const s = fold(String(name || '').replace(CHANNEL_SUFFIX, ''));
   return KEY_ALIAS[s] || s;
 }
 
@@ -116,6 +136,9 @@ export function indexPackages(packages) {
     for (const o of p.planOffers || []) {
       const v = o.retailPriceValue, d = o.durationDays;
       if (o.isTrial) { if (d && d <= 31) trialDays = Math.max(trialDays || 0, d); continue; }
+      // ~15% of BR plan offers are quoted in USD. Showing "R$ 3,49" for a US$ 3,49 plan
+      // understates it by about four times, so anything not in reais is ignored.
+      if (o.currency && o.currency !== 'BRL') continue;
       if (v == null || d == null || d < 28 || d > 31 || v < 3 || v > 250) continue;
       if (monthly == null || v < monthly) monthly = v;
     }
@@ -125,7 +148,9 @@ export function indexPackages(packages) {
       icon: p.icon,
       monthly,
       trialDays,
-      plans: (p.planOffers || []).map(o => ({ title: (o.title || '').trim().toLowerCase(), value: o.retailPriceValue, days: o.durationDays })),
+      plans: (p.planOffers || [])
+        .filter(o => !o.currency || o.currency === 'BRL')
+        .map(o => ({ title: (o.title || '').trim().toLowerCase(), value: o.retailPriceValue, days: o.durationDays })),
     });
   }
   for (const [tier, parent] of Object.entries(TIER_OF)) {
@@ -135,10 +160,14 @@ export function indexPackages(packages) {
   return map;
 }
 
-function globoPrice(pkgIndex, titleWord, fallback) {
+/** Our own table wins: JustWatch's Globoplay plan prices went stale for weeks after the
+ *  October 2026 repricing, so it is only consulted when we have no figure of our own. */
+function globoPrice(pkgIndex, titleWord, own) {
+  if (own && own.monthly != null) return { monthly: own.monthly, yearly: own.yearly ?? null };
   const g = pkgIndex && pkgIndex.get(GLOBO_PKG);
   const hit = g && g.plans.find(pl => pl.title.includes(titleWord) && pl.days >= 28 && pl.days <= 31 && pl.value > 3 && pl.value < 250);
-  return hit ? hit.value : fallback;
+  if (hit) return { monthly: hit.value, yearly: null };
+  return { monthly: null, yearly: (own && own.yearly) ?? null };
 }
 
 /**
@@ -223,7 +252,7 @@ export function classify(offers, ctx = {}) {
   const direct = new Set(b.included.map(r => r.key));
   b.extra = b.extra.filter(r => r.kind !== 'channel' || !direct.has(r.key));
 
-  const byMonthly = (x, y) => (y.owned - x.owned) || ((x.monthly ?? 1e9) - (y.monthly ?? 1e9)) || x.name.localeCompare(y.name, 'pt-BR');
+  const byMonthly = (x, y) => (y.owned - x.owned) || ((perMonth(x) ?? 1e9) - (perMonth(y) ?? 1e9)) || x.name.localeCompare(y.name, 'pt-BR');
   const byPrice = (x, y) => (x.priceValue ?? 1e9) - (y.priceValue ?? 1e9) || x.name.localeCompare(y.name, 'pt-BR');
   b.included.sort(byMonthly);
   b.extra.sort(byMonthly);
@@ -238,38 +267,44 @@ export function classify(offers, ctx = {}) {
 
 function globoRows(base, answer, pkgs) {
   const icon = base.icon;
-  const basicPrice = globoPrice(pkgs, 'anuncio', GLOBO_PRICES.base);
-  if (answer.error) {
-    return [{ ...base, bucket: 'included', monthly: basicPrice, uncertain: 'Não consegui confirmar o plano no Globoplay agora.' }];
-  }
+  const basic = globoPrice(pkgs, 'anuncio', GLOBO_PRICES.base);
+  const unsure = msg => [{ ...base, bucket: 'included', ...basic, uncertain: msg }];
+
+  if (answer.error) return unsure('Não consegui confirmar o plano no Globoplay agora.');
   const names = answer.services || [];
-  if (!names.length) {
-    return [{ ...base, bucket: 'included', monthly: basicPrice, uncertain: 'O Globoplay não confirma que o título está disponível agora.' }];
+  if (!names.length) return unsure('O Globoplay não confirma que o título está disponível agora.');
+
+  if (names.some(isAdsPlan)) {
+    return [{ ...base, bucket: 'included', ...basic, note: 'No plano com anúncios' }];
   }
-  if (names.includes(GLOBO_ADS_BASE)) {
-    return [{ ...base, bucket: 'included', monthly: basicPrice, note: 'No plano básico' }];
-  }
+
   const rows = [];
-  if (names.includes('Premium')) {
+  if (names.some(isPremiumPlan)) {
     rows.push({
       ...base, bucket: 'extra', kind: 'plan', name: 'Globoplay Premium', key: 'globoplaypremium',
-      icon, monthly: globoPrice(pkgs, 'premium', GLOBO_PRICES.premium), note: 'Não está no plano com anúncios',
+      icon, ...globoPrice(pkgs, 'premium', GLOBO_PRICES.premium), note: 'Não está no plano com anúncios',
     });
   }
-  if (names.includes('Telecine')) {
+  if (names.some(isTelecinePlan)) {
     rows.push({
       ...base, bucket: 'extra', kind: 'channel', name: 'Globoplay + Telecine', key: 'telecine',
-      host: { id: GLOBO_PKG, name: 'Globoplay' }, icon, monthly: GLOBO_PRICES.telecineCombo, comboPrice: true,
+      host: { id: GLOBO_PKG, name: 'Globoplay' }, icon, ...GLOBO_PRICES.telecineCombo, comboPrice: true,
     });
   }
-  for (const n of names) {
-    if (n === 'Premium' || n === 'Telecine' || GLOBO_LEGACY.has(n)) continue;
+
+  // Anything we don't recognise: name it rather than guess a bucket for it.
+  const unknown = names.filter(n => !isAdsPlan(n) && !isPremiumPlan(n) && !isTelecinePlan(n) && !isLegacyPlan(n));
+  for (const n of unknown) {
     rows.push({ ...base, bucket: 'extra', kind: 'channel', name: n, key: serviceKey(n), host: { id: GLOBO_PKG, name: 'Globoplay' }, icon, monthly: null });
   }
-  if (!rows.length && names.some(n => GLOBO_LEGACY.has(n))) {
-    rows.push({ ...base, bucket: 'included', monthly: null, note: 'Só no antigo plano Padrão sem anúncios' });
+
+  if (rows.length) return rows;
+  // Only legacy plan names left — true for titles kept for old subscribers. Don't claim it is
+  // included (a new subscriber can't watch it) and don't claim a price we can't name.
+  if (names.some(isLegacyPlan)) {
+    return [{ ...base, bucket: 'included', monthly: null, uncertain: 'Só em planos antigos do Globoplay, não nos vendidos hoje.' }];
   }
-  return rows;
+  return unsure('O Globoplay não informa em qual plano este título está.');
 }
 
 function names(rows) {
@@ -280,12 +315,12 @@ export function summarize(b) {
   const ownedRows = [...b.included, ...b.extra].filter(r => r.owned);
   if (ownedRows.length) return { tone: 'ok', kind: 'owned', names: names(ownedRows) };
   if (b.included.length) {
-    const prices = b.included.map(r => r.monthly).filter(v => v != null);
+    const prices = b.included.map(perMonth).filter(v => v != null);
     return { tone: 'ok', kind: 'included', names: names(b.included), from: prices.length ? Math.min(...prices) : null };
   }
   if (b.free.length) return { tone: 'ok', kind: 'free', names: names(b.free) };
   if (b.extra.length) {
-    const prices = b.extra.map(r => r.monthly).filter(v => v != null);
+    const prices = b.extra.map(perMonth).filter(v => v != null);
     return { tone: 'extra', kind: 'extra', names: names(b.extra), from: prices.length ? Math.min(...prices) : null };
   }
   const tx = [...b.rent, ...b.buy].map(r => r.priceValue).filter(v => v != null);
