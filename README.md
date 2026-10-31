@@ -46,6 +46,13 @@ that **all** Globoplay plan labels are ones `classify.js` can place, that prices
 and plausible, and that no Globoplay row appears without naming its plan. It runs daily on
 GitHub Actions and opens an issue (which GitHub emails) when something breaks.
 
+One limit worth knowing: **Globoplay only returns its plan list to Brazilian IPs.** GitHub's
+runners are in the US, so CI skips those checks and cannot catch a plan rename — run
+`node checkup.mjs` from Brazil for the full sweep. The app's own defence is `classify.js`,
+which refuses to place a plan label it doesn't recognise instead of guessing, so a rename
+degrades to "não sei em qual plano" rather than to a confident wrong answer. Viewers outside
+Brazil see that same honest fallback for Globoplay titles.
+
 Globoplay's prices are not in any readable API — JustWatch served the pre-October numbers for
 weeks — so they live in `GLOBO_PRICES` in `classify.js`, with an `asOf` date the checkup warns on.
 

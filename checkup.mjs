@@ -33,7 +33,20 @@ const SAMPLE = ['Matrix 1999', 'Cidade de Deus', 'Tropa de Elite', 'Ainda Estou 
 const problems = [];
 const fail = (what, detail) => { problems.push({ level: 'FAIL', what, detail }); console.log(`FAIL  ${what}\n      ${detail}`); };
 const warn = (what, detail) => { problems.push({ level: 'WARN', what, detail }); console.log(`WARN  ${what}\n      ${detail}`); };
+const skip = (what, detail) => { problems.push({ level: 'SKIP', what, detail }); console.log(`skip  ${what}\n      ${detail}`); };
 const pass = what => console.log(`ok    ${what}`);
+
+// Globoplay only returns its plan list to Brazilian IPs. The app is used from São Paulo, so
+// this matters for where the CHECK runs, not for the app: GitHub's runners are in the US and
+// see an empty subscriptionServices for every title. Those checks are skipped there rather
+// than reported as breakage — but it also means CI cannot catch a Globoplay plan rename.
+// The app's own defence is classify.js, which refuses to place a label it doesn't recognise.
+let inBrazil = false;
+try {
+  const trace = await (await fetch('https://cloudflare.com/cdn-cgi/trace')).text();
+  inBrazil = /^loc=BR$/m.test(trace);
+} catch {}
+console.log(inBrazil ? 'note  running from Brazil — Globoplay plan checks are active\n' : 'note  running outside Brazil — Globoplay plan checks will be skipped\n');
 
 async function jw(query, variables = {}, headers = {}) {
   const r = await fetch(JW, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify({ query, variables }) });
@@ -100,9 +113,12 @@ async function globo(body) {
 }
 
 try {
-  const d = await globo({ query: 'query T($id: String!) { title(titleId: $id) { subscriptionServices { name } } }', variables: { id: 'rJrXxvJ2s8' } });
-  if (!d?.title?.subscriptionServices?.length) fail('Globoplay stopped naming the plans for a title', 'subscriptionServices came back empty');
-  else pass('Globoplay answers film links (/t/) with its plan list');
+  const d = await globo({ query: 'query T($id: String!) { title(titleId: $id) { headline subscriptionServices { name } } }', variables: { id: 'rJrXxvJ2s8' } });
+  if (!d?.title?.headline) fail('Globoplay stopped resolving film links (/t/)', 'title(titleId) returned nothing — the query or the headers changed');
+  else if (!d.title.subscriptionServices?.length) {
+    if (inBrazil) fail('Globoplay stopped naming the plans for a title', 'subscriptionServices came back empty from a Brazilian IP');
+    else skip('Globoplay plan list', 'empty outside Brazil, as expected — the endpoint and query are fine');
+  } else pass('Globoplay answers film links (/t/) with its plan list');
 } catch (e) { fail('Globoplay rejected the request', `${e} — check the four x-* headers`); }
 
 try {
@@ -135,12 +151,17 @@ try {
   }
   const labels = [...seen.keys()];
   const unknown = labels.filter(n => !KNOWN_PLAN.test(fold(n)));
-  if (!resolved) fail('no Globoplay title could be resolved to its plans', 'the link format may have changed');
-  else if (unknown.length) fail('Globoplay is using plan names the app cannot place', `${unknown.map(n => `"${n}"`).join(', ')} — teach classify.js about them before the app starts guessing`);
-  else pass(`Globoplay plan names all recognised across ${resolved} titles (${labels.join(', ')})`);
-
-  const ads = labels.filter(n => /anuncio/.test(fold(n)));
-  if (resolved && !ads.length) warn('no ad-supported plan appeared in the sample', 'if that plan was retired, the pricing and wording need revisiting');
+  if (!resolved) {
+    fail('no Globoplay title could be resolved at all', 'the link format in standardWebURL may have changed');
+  } else if (!labels.length) {
+    if (inBrazil) fail('Globoplay returned no plan names for any title', `${resolved} titles resolved, none named a plan`);
+    else skip('Globoplay plan-name sweep', `${resolved} titles resolved but plans are hidden outside Brazil — run \`node checkup.mjs\` from São Paulo to verify them`);
+  } else if (unknown.length) {
+    fail('Globoplay is using plan names the app cannot place', `${unknown.map(n => `"${n}"`).join(', ')} — teach classify.js about them before the app starts guessing`);
+  } else {
+    pass(`Globoplay plan names all recognised across ${resolved} titles (${labels.join(', ')})`);
+    if (!labels.some(n => /anuncio/.test(fold(n)))) warn('no ad-supported plan appeared in the sample', 'if that plan was retired, the pricing and wording need revisiting');
+  }
 } catch (e) { warn('could not sweep Globoplay plan names', String(e)); }
 
 // ---------------------------------------------------------------- 4. prices
@@ -207,10 +228,12 @@ if (checked) pass(`${checked} sample titles classified without a bad shape`);
 
 const fails = problems.filter(p => p.level === 'FAIL');
 const warns = problems.filter(p => p.level === 'WARN');
+const skips = problems.filter(p => p.level === 'SKIP');
+const tail = skips.length ? `, ${skips.length} skipped (needs a Brazilian IP)` : '';
 console.log('');
-if (fails.length) console.log(`${fails.length} FAIL, ${warns.length} WARN — the app is wrong or broken right now.`);
-else if (warns.length) console.log(`0 FAIL, ${warns.length} WARN — working, but needs attention soon.`);
-else console.log('All good.');
+if (fails.length) console.log(`${fails.length} FAIL, ${warns.length} WARN${tail} — the app is wrong or broken right now.`);
+else if (warns.length) console.log(`0 FAIL, ${warns.length} WARN${tail} — working, but needs attention soon.`);
+else console.log(`All good${tail}.`);
 
 if (process.env.GITHUB_STEP_SUMMARY) {
   const { appendFileSync } = await import('node:fs');
