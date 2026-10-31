@@ -109,60 +109,70 @@ try {
 async function globo(body) {
   const r = await fetch(GLOBO, { method: 'POST', headers: GLOBO_HEADERS, body: JSON.stringify(body) });
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
-  return (await r.json()).data;
+  const json = await r.json();
+  if (json.errors) throw new Error(json.errors[0].message);
+  return json.data;
 }
 
-try {
-  const d = await globo({ query: 'query T($id: String!) { title(titleId: $id) { headline subscriptionServices { name } } }', variables: { id: 'rJrXxvJ2s8' } });
-  if (!d?.title?.headline) fail('Globoplay stopped resolving film links (/t/)', 'title(titleId) returned nothing — the query or the headers changed');
-  else if (!d.title.subscriptionServices?.length) {
-    if (inBrazil) fail('Globoplay stopped naming the plans for a title', 'subscriptionServices came back empty from a Brazilian IP');
-    else skip('Globoplay plan list', 'empty outside Brazil, as expected — the endpoint and query are fine');
-  } else pass('Globoplay answers film links (/t/) with its plan list');
-} catch (e) { fail('Globoplay rejected the request', `${e} — check the four x-* headers`); }
+const TITLE_Q = 'query T($id: String!) { title(titleId: $id) { headline subscriptionServices { name } } }';
+const VIDEO_Q = 'query V($id: ID!) { video(id: $id) { title { headline subscriptionServices { name } } } }';
 
+// Works from anywhere: proves the endpoint still accepts the four x-* headers and that the
+// query the app sends is still valid. What comes back is geo-dependent and checked below.
 try {
-  const d = await globo({ query: 'query V($id: ID!) { video(id: $id) { title { subscriptionServices { name } } } }', variables: { id: '7982037' } });
-  if (!d?.video?.title) fail('Globoplay stopped resolving series links (/v/)', 'video(id) returned no title');
-  else pass('Globoplay answers series links (/v/)');
-} catch (e) { fail('the Globoplay series query no longer works', String(e)); }
+  await globo({ query: TITLE_Q, variables: { id: 'rJrXxvJ2s8' } });
+  await globo({ query: VIDEO_Q, variables: { id: '7982037' } });
+  pass('Globoplay accepts the headers and both queries the app sends');
+} catch (e) { fail('Globoplay rejected the request', `${e} — check the four x-* headers and the query shape`); }
 
-// The rename check: sweep real titles and assert every plan label is one we can place.
-try {
-  const { data } = await jw(`query { popularTitles(country: BR, first: 40, filter: {packages: ["gop"], objectTypes: [MOVIE]}) {
-    edges { node { offers(country: BR, platform: WEB, filter: {packages: ["gop"]}) { standardWebURL } } } } }`);
-  const seen = new Map();
-  let resolved = 0;
-  for (const e of data.popularTitles.edges) {
-    const url = (e.node.offers || [])[0]?.standardWebURL || '';
-    const t = url.match(/\/t\/([A-Za-z0-9]+)/)?.[1];
-    const v = url.match(/\/v\/(\d+)/)?.[1];
-    if (!t && !v) continue;
-    let title;
-    try {
-      const d = t
-        ? await globo({ query: 'query T($id: String!) { title(titleId: $id) { subscriptionServices { name } } }', variables: { id: t } })
-        : await globo({ query: 'query V($id: ID!) { video(id: $id) { title { subscriptionServices { name } } } }', variables: { id: v } });
-      title = t ? d?.title : d?.video?.title;
-    } catch { continue; }
-    if (!title) continue;
-    resolved++;
-    for (const s of title.subscriptionServices || []) seen.set(s.name, (seen.get(s.name) || 0) + 1);
-  }
-  const labels = [...seen.keys()];
-  const unknown = labels.filter(n => !KNOWN_PLAN.test(fold(n)));
-  if (!resolved) {
-    fail('no Globoplay title could be resolved at all', 'the link format in standardWebURL may have changed');
-  } else if (!labels.length) {
-    if (inBrazil) fail('Globoplay returned no plan names for any title', `${resolved} titles resolved, none named a plan`);
-    else skip('Globoplay plan-name sweep', `${resolved} titles resolved but plans are hidden outside Brazil — run \`node checkup.mjs\` from São Paulo to verify them`);
-  } else if (unknown.length) {
-    fail('Globoplay is using plan names the app cannot place', `${unknown.map(n => `"${n}"`).join(', ')} — teach classify.js about them before the app starts guessing`);
-  } else {
-    pass(`Globoplay plan names all recognised across ${resolved} titles (${labels.join(', ')})`);
-    if (!labels.some(n => /anuncio/.test(fold(n)))) warn('no ad-supported plan appeared in the sample', 'if that plan was retired, the pricing and wording need revisiting');
-  }
-} catch (e) { warn('could not sweep Globoplay plan names', String(e)); }
+if (!inBrazil) {
+  skip('Globoplay content checks', 'films, plan names and prices are only served to Brazilian IPs — run `node checkup.mjs` from São Paulo for the full sweep');
+} else {
+  try {
+    const d = await globo({ query: TITLE_Q, variables: { id: 'rJrXxvJ2s8' } });
+    if (!d?.title?.headline) fail('Globoplay stopped resolving film links (/t/)', 'title(titleId) returned nothing from a Brazilian IP');
+    else if (!d.title.subscriptionServices?.length) fail('Globoplay stopped naming the plans for a title', 'subscriptionServices came back empty from a Brazilian IP');
+    else pass('Globoplay answers film links (/t/) with its plan list');
+  } catch (e) { fail('the Globoplay film query no longer works', String(e)); }
+
+  try {
+    const d = await globo({ query: VIDEO_Q, variables: { id: '7982037' } });
+    if (!d?.video?.title) fail('Globoplay stopped resolving series links (/v/)', 'video(id) returned no title from a Brazilian IP');
+    else pass('Globoplay answers series links (/v/)');
+  } catch (e) { fail('the Globoplay series query no longer works', String(e)); }
+
+  // The rename check: sweep real titles and assert every plan label is one we can place.
+  try {
+    const { data } = await jw(`query { popularTitles(country: BR, first: 40, filter: {packages: ["gop"], objectTypes: [MOVIE]}) {
+      edges { node { offers(country: BR, platform: WEB, filter: {packages: ["gop"]}) { standardWebURL } } } } }`);
+    const seen = new Map();
+    let resolved = 0;
+    for (const e of data.popularTitles.edges) {
+      const url = (e.node.offers || [])[0]?.standardWebURL || '';
+      const t = url.match(/\/t\/([A-Za-z0-9]+)/)?.[1];
+      const v = url.match(/\/v\/(\d+)/)?.[1];
+      if (!t && !v) continue;
+      let title;
+      try {
+        const d = t ? await globo({ query: TITLE_Q, variables: { id: t } })
+                    : await globo({ query: VIDEO_Q, variables: { id: v } });
+        title = t ? d?.title : d?.video?.title;
+      } catch { continue; }
+      if (!title) continue;
+      resolved++;
+      for (const svc of title.subscriptionServices || []) seen.set(svc.name, (seen.get(svc.name) || 0) + 1);
+    }
+    const labels = [...seen.keys()];
+    const unknown = labels.filter(n => !KNOWN_PLAN.test(fold(n)));
+    if (!resolved) fail('no Globoplay title could be resolved at all', 'the link format in standardWebURL may have changed');
+    else if (!labels.length) fail('Globoplay returned no plan names for any title', `${resolved} titles resolved, none named a plan`);
+    else if (unknown.length) fail('Globoplay is using plan names the app cannot place', `${unknown.map(n => `"${n}"`).join(', ')} — teach classify.js about them before the app starts guessing`);
+    else {
+      pass(`Globoplay plan names all recognised across ${resolved} titles (${labels.join(', ')})`);
+      if (!labels.some(n => /anuncio/.test(fold(n)))) warn('no ad-supported plan appeared in the sample', 'if that plan was retired, the pricing and wording need revisiting');
+    }
+  } catch (e) { warn('could not sweep Globoplay plan names', String(e)); }
+}
 
 // ---------------------------------------------------------------- 4. prices
 
