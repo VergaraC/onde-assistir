@@ -56,12 +56,16 @@ a{color:inherit}
   backdrop-filter:saturate(1.4) blur(14px);-webkit-backdrop-filter:saturate(1.4) blur(14px);
   padding:calc(10px + env(safe-area-inset-top)) 16px 10px;border-bottom:1px solid var(--rule)}
 .bar-in{max-width:620px;margin:0 auto;display:flex;flex-direction:column;gap:10px}
-.brand-row{display:flex;align-items:center;gap:10px}
+.brand-row{display:flex;align-items:center;gap:8px}
 .brand{display:flex;align-items:center;gap:8px;font-family:var(--display);font-weight:800;font-size:19px;letter-spacing:-.02em;
   text-decoration:none;color:var(--ink);background:none;border:0;padding:0}
 .brand svg{width:26px;height:26px;flex:none}
-.mine{margin-left:auto;display:inline-flex;align-items:center;gap:6px;border:1px solid var(--rule);background:var(--surface);
-  border-radius:999px;padding:6px 12px;font-family:var(--display);font-weight:600;font-size:13px}
+.brand span{white-space:nowrap}
+@media (max-width:420px){ .brand span{display:none} }
+.mine{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--rule);background:var(--surface);
+  border-radius:999px;padding:6px 12px;font-family:var(--display);font-weight:600;font-size:13px;
+  text-decoration:none;white-space:nowrap}
+.mine:first-of-type{margin-left:auto}
 .mine b{display:inline-grid;place-items:center;min-width:20px;height:20px;padding:0 6px;border-radius:999px;background:var(--ink);color:var(--ground);font-size:11.5px}
 .search{position:relative}
 .search input{width:100%;font-size:17px;padding:12px 40px 12px 42px;border-radius:12px;border:1px solid var(--rule);
@@ -83,7 +87,7 @@ main{max-width:620px;margin:0 auto;padding:16px 16px 48px;display:flex;flex-dire
 .btn.ghost{background:var(--sunk);color:var(--ink)}
 .chips{display:flex;flex-wrap:wrap;gap:8px}
 .chip{border:1px solid var(--rule);background:var(--surface);border-radius:999px;padding:7px 12px;font-size:14px;max-width:100%;
-  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-decoration:none;color:inherit}
 .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px 10px}
 @media (min-width:520px){.grid{grid-template-columns:repeat(4,1fr)}}
 .tile{display:flex;flex-direction:column;gap:6px;text-decoration:none;border:0;background:none;padding:0;text-align:left}
@@ -93,10 +97,14 @@ main{max-width:620px;margin:0 auto;padding:16px 16px 48px;display:flex;flex-dire
 
 /* ---------- search results ---------- */
 .results{display:flex;flex-direction:column;background:var(--surface);border:1px solid var(--rule);border-radius:14px;overflow:hidden}
-.result{display:flex;gap:12px;align-items:center;padding:10px 12px;border:0;border-bottom:1px solid var(--rule);background:none;text-align:left;width:100%}
+.result{display:flex;gap:0;align-items:stretch;border:0;border-bottom:1px solid var(--rule);background:none;text-align:left;width:100%}
 .result:last-child{border-bottom:0}
+.result-main{display:flex;gap:12px;align-items:center;padding:10px 12px;flex:1;min-width:0;text-decoration:none;color:inherit}
+.result > img,.result > .ph{margin:10px 0 10px 12px}
 .result img,.result .ph{width:44px;height:66px;border-radius:6px;object-fit:cover;background:var(--sunk);flex:none}
-.result .t{font-family:var(--display);font-weight:600;font-size:16px;line-height:1.2}
+.result .t{font-family:var(--display);font-weight:600;font-size:16px;line-height:1.2;text-decoration:none}
+a.result{text-decoration:none}
+a.result:active,.result-main:active{background:var(--sunk)}
 .result .m{font-size:13px;color:var(--ink-3);margin-top:2px}
 
 /* ---------- title ---------- */
@@ -134,6 +142,18 @@ a.row:hover .n{text-decoration:underline;text-underline-offset:3px}
 .yours{align-self:flex-start;font-family:var(--display);font-size:11px;font-weight:700;letter-spacing:.02em;color:var(--ok);background:var(--ok-soft);border-radius:999px;padding:2px 8px;margin:2px 0}
 .leave{font-size:12.5px;white-space:nowrap;color:var(--ink-3)}
 .leave.soon{color:var(--extra);font-weight:600}
+
+.save{align-self:flex-start;display:inline-flex;align-items:center;gap:8px;border:1px solid var(--rule);background:var(--surface);
+  border-radius:999px;padding:9px 16px;font-family:var(--display);font-weight:600;font-size:14.5px;color:var(--ink)}
+.save .star{font-size:16px;line-height:1;color:var(--ink-3)}
+.save.on{border-color:var(--ok);color:var(--ok)}
+.save.on .star{color:var(--ok)}
+.result .m .ok{color:var(--ok);font-weight:600}
+.result .m .money{color:var(--money);font-weight:600}
+.result .m .bad{color:var(--bad);font-weight:600}
+.drop{flex:none;align-self:center;width:40px;margin-right:6px;padding:10px 0;border-radius:8px;border:0;background:none;color:var(--ink-3);font-size:20px;line-height:1}
+.drop:hover{background:var(--sunk);color:var(--ink)}
+.nudge .btn{text-decoration:none}
 
 .also{display:flex;flex-direction:column;gap:8px}
 .also p{margin:0;font-size:13.5px;color:var(--ink-3)}
@@ -176,9 +196,10 @@ dialog::backdrop{background:rgba(5,6,10,.5)}
     <div class="brand-row">
       <a class="brand" href="#/" aria-label="Onde Assistir — início">
         <svg viewBox="0 0 64 64" aria-hidden="true"><rect width="64" height="64" rx="15" fill="currentColor"/><path d="M32 11c-9.4 0-17 7.4-17 16.6C15 40 32 53 32 53s17-13 17-25.4C49 18.4 41.4 11 32 11Z" fill="var(--ground)"/><path d="M27.5 21.5v13l11-6.5-11-6.5Z" fill="var(--ok)"/></svg>
-        Onde Assistir
+        <span>Onde Assistir</span>
       </a>
-      <button class="mine" id="mineBtn" type="button">Meus serviços <b id="mineCount" hidden>0</b></button>
+      <a class="mine" href="#/lista">Lista <b id="listCount" hidden>0</b></a>
+      <button class="mine" id="mineBtn" type="button">Serviços <b id="mineCount" hidden>0</b></button>
     </div>
     <div class="search" role="search">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>

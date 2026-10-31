@@ -1,7 +1,7 @@
 // Onde Assistir service worker: keeps the app shell usable offline.
 // Network-first for same-origin files so updates arrive immediately; API calls are never
 // intercepted (both are cross-origin).
-const CACHE = 'onde-assistir-v1';
+const CACHE = 'onde-assistir-v2';
 const SHELL = ['./', './index.html', './app.js', './classify.js', './manifest.json', './icon.svg', './icon-180.png', './icon-512.png'];
 
 self.addEventListener('install', e => {

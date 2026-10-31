@@ -11,7 +11,11 @@ For any title it answers:
 - **Grátis**, **Alugar**, **Comprar**, **No cinema** — with prices in BRL
 - **Não está em nenhum serviço no Brasil** — when it isn't available at all
 
-Mark the services you pay for under **Meus serviços** and it tells you when you can already watch.
+Mark the services you pay for under **Serviços** and it tells you when you can already watch.
+
+**Minha lista** — save titles with ★ and the list tells you, in one place, which ones you can
+watch right now, which are about to leave a service you pay for, and **which single subscription
+would unlock the most of the rest**, with its monthly price. Saved on the device; nothing leaves it.
 
 ## How it works
 
@@ -29,6 +33,9 @@ Accuracy rules live in [`classify.js`](classify.js):
 - Ad tiers (Prime Video with Ads, Netflix with Ads) are folded into their service, not shown as extras.
 - JustWatch lists many Globoplay titles as plain "Globoplay", but ~70% of them are not in the basic plan. Globoplay's own API decides: basic plan, Premium, or the Telecine combo.
 - Brazilian productions keep their Portuguese title (JustWatch's pt-BR localisation often falls back to English).
+- Prices quoted in USD are ignored (~15% of BR plan offers are), and a service whose plans
+  disagree wildly — a promotion next to a real price, as Disney+ did in October 2026 — shows no
+  price at all rather than a number that is about to be wrong.
 
 ## Known gaps
 

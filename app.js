@@ -10,7 +10,7 @@
  *
  * Everything is cached in localStorage so repeat lookups cost nothing.
  */
-import { classify, indexPackages, displayTitle, posterUrl, perMonth } from './classify.js';
+import { classify, indexPackages, displayTitle, posterUrl, perMonth, planForList } from './classify.js';
 
 const RELAY = '';  // optional: 'https://onde-assistir.<you>.workers.dev'
 
@@ -116,6 +116,16 @@ function pruneCache() {
 
 let owned = new Set(store.get('oa:owned', []));
 let recents = store.get('oa:recent', []);
+let saved = store.get('oa:list', []);
+
+const isSaved = path => saved.some(x => x.path === path);
+function toggleSaved(path, meta) {
+  if (isSaved(path)) saved = saved.filter(x => x.path !== path);
+  else saved = [{ ...meta, path, savedAt: Date.now() }, ...saved].slice(0, 100);
+  store.set('oa:list', saved);
+  renderSavedCount();
+  return isSaved(path);
+}
 
 // ---------------------------------------------------------------- JustWatch transport
 
@@ -289,6 +299,13 @@ function toast(msg) {
 
 // ---------------------------------------------------------------- views
 
+function renderSavedCount() {
+  const el = $('#listCount');
+  if (!el) return;
+  el.hidden = !saved.length;
+  el.textContent = saved.length;
+}
+
 function renderMineCount() {
   const n = owned.size;
   $('#mineCount').hidden = !n;
@@ -307,10 +324,14 @@ async function renderHome() {
   const nudge = owned.size ? '' : `
     <div class="nudge"><p>Marque os serviços que você assina para ver primeiro onde você já pode assistir.</p>
     <button class="btn" type="button" data-open-mine>Marcar</button></div>`;
+  const listCard = saved.length ? `
+    <a class="nudge" href="#/lista" style="text-decoration:none">
+      <p><strong>Minha lista</strong> · ${saved.length} ${saved.length === 1 ? 'título' : 'títulos'} — veja o que você já pode assistir e o que sai em breve.</p>
+      <span class="btn">Abrir</span></a>` : '';
   const rec = recents.length ? `
     <section class="section"><h2 class="label">Buscas recentes</h2>
       <div class="chips">${recents.map(r => `<a class="chip" href="#${esc(r.path)}">${esc(r.title)}</a>`).join('')}</div></section>` : '';
-  view.innerHTML = `${nudge}${rec}
+  view.innerHTML = `${nudge}${listCard}${rec}
     <section class="section"><h2 class="label">Em alta no Brasil</h2>
       <div class="grid" id="popular">${Array.from({ length: 12 }, () => '<div class="tile"><div class="poster skel"></div></div>').join('')}</div></section>`;
   try {
@@ -427,6 +448,7 @@ function answerHtml(s) {
 }
 
 let current = null;  // { path, node, fetchedAt, globoplay }
+let listSeq = 0;
 
 async function renderTitle(path, { fresh = false } = {}) {
   view.innerHTML = `
@@ -496,6 +518,9 @@ function paintTitle() {
       <div><h1>${esc(title)}</h1>${other ? `<div class="orig">${esc(other)}</div>` : ''}<div class="meta">${esc(meta)}</div></div>
     </div>
     ${answerHtml(b.summary)}
+    <button class="save ${isSaved(path) ? 'on' : ''}" type="button" data-save>
+      <span class="star">${isSaved(path) ? '★' : '☆'}</span>${isSaved(path) ? 'Na minha lista' : 'Salvar na minha lista'}
+    </button>
     ${isShow ? '<p class="muted" style="margin:-8px 0 0;font-size:13.5px">Disponibilidade da série; algumas temporadas podem estar em outro lugar.</p>' : ''}
     ${groups}
     <section class="also">
@@ -516,12 +541,133 @@ function paintTitle() {
     </footer>`;
 }
 
+// ---------------------------------------------------------------- minha lista
+
+/** Resolve saved titles to classified buckets, a few at a time so the list paints as it goes. */
+async function loadSaved(onProgress) {
+  const pkgs = await packages();
+  const out = [];
+  const queue = [...saved];
+  const WORKERS = 4;
+
+  async function worker() {
+    while (queue.length) {
+      const item = queue.shift();
+      try {
+        const entry = await jw('GetTitleOffers', { path: item.path });
+        const node = entry.data.url.node;
+        const gOffer = (node.offers || []).find(o => o.package.packageId === 307 && o.monetizationType === 'FLATRATE');
+        const globoplay = gOffer ? await globoplayPlans(gOffer.standardWebURL) : null;
+        out.push({ ...item, title: displayTitle(node.content) || item.title, buckets: classify(node.offers, { packages: pkgs, globoplay, owned }) });
+      } catch {
+        out.push({ ...item, buckets: null });   // keep the row; just can't say where it is
+      }
+      onProgress(out.length, saved.length);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(WORKERS, saved.length) }, worker));
+  // Preserve the order the user saved them in.
+  const order = new Map(saved.map((x, i) => [x.path, i]));
+  out.sort((a, b) => order.get(a.path) - order.get(b.path));
+  return out;
+}
+
+function savedCardHtml(it) {
+  const img = posterUrl(it.poster, 's166');
+  const b = it.buckets;
+  let line = '<span class="muted">Não consegui consultar agora</span>';
+  if (b) {
+    const mine = [...b.included, ...b.extra, ...b.free].filter(r => r.owned || r.bucket === 'free');
+    if (mine.length) line = `<span class="ok">Você já pode assistir</span> · ${esc(list(mine.map(r => r.name)))}`;
+    else if (b.included.length || b.extra.length) {
+      const o = [...b.included, ...b.extra];
+      const cheapest = o.map(perMonth).filter(v => v != null).sort((x, y) => x - y)[0];
+      line = `${esc(list([...new Set(o.map(r => r.name))].slice(0, 3)))}${cheapest != null ? ` · a partir de ${brl(cheapest)}/mês` : ''}`;
+    } else if (b.rent.length || b.buy.length) {
+      const cheapest = [...b.rent, ...b.buy].map(r => r.priceValue).filter(v => v != null).sort((x, y) => x - y)[0];
+      line = `<span class="money">Só alugando ou comprando</span>${cheapest != null ? ` · a partir de ${brl(cheapest)}` : ''}`;
+    } else if (b.cinema.length) line = '<span class="money">Em cartaz no cinema</span>';
+    else line = '<span class="bad">Não está no Brasil</span>';
+  }
+  // The remove button is a sibling of the link, not inside it: a control nested in an anchor
+  // is ambiguous for keyboards and screen readers.
+  return `<div class="result">
+    <a class="result-main" href="#${esc(it.path)}">
+      ${img ? `<img loading="lazy" src="${esc(img)}" alt="">` : '<div class="ph"></div>'}
+      <div><div class="t">${esc(it.title)}</div><div class="m">${line}</div></div>
+    </a>
+    <button class="drop" type="button" data-drop="${esc(it.path)}" aria-label="Tirar ${esc(it.title)} da lista">×</button>
+  </div>`;
+}
+
+function planHtml(plan) {
+  const parts = [];
+  if (plan.leaving.length) {
+    parts.push(`<section class="group tone-extra"><h2 class="label">Sai em breve do que você assina</h2>
+      <div class="list">${plan.leaving.slice(0, 6).map(l => `<div class="row"><div class="txt">
+        <div class="top"><span class="n">${esc(l.title)}</span><span class="end"><span class="leave soon">${l.days <= 1 ? 'sai amanhã' : `${l.days} dias`}</span></span></div>
+        <div class="d">no ${esc(l.service)}</div></div></div>`).join('')}</div></section>`);
+  }
+  if (plan.best.length) {
+    const top = plan.best.slice(0, 3);
+    parts.push(`<section class="group tone-ok"><h2 class="label">Uma assinatura que cobre mais da lista</h2>
+      <div class="list">${top.map(b => `<div class="row"><div class="txt">
+        <div class="top"><span class="n">${esc(b.name)}${b.host ? ` <span class="muted">no ${esc(b.host.name)}</span>` : ''}</span>
+        <span class="end">${b.monthly != null ? `<span class="price">${brl(b.monthly)}<small>/mês</small></span>` : ''}</span></div>
+        <div class="d">cobre ${b.titles.length} ${b.titles.length === 1 ? 'título' : 'títulos'} que você ainda não assiste · ${esc(list(b.titles.slice(0, 3)))}${b.titles.length > 3 ? '…' : ''}</div>
+      </div></div>`).join('')}</div></section>`);
+  }
+  return parts.join('');
+}
+
+async function renderList() {
+  document.title = 'Minha lista — Onde Assistir';
+  if (!saved.length) {
+    view.innerHTML = `<button class="back" type="button" data-back>‹ Voltar</button>
+      <p class="muted">Sua lista está vazia. Abra um filme e toque em <strong>Salvar na minha lista</strong> para acompanhar onde ele está e quando sai.</p>`;
+    return;
+  }
+  view.innerHTML = `<button class="back" type="button" data-back>‹ Voltar</button>
+    <h2 class="label" id="listStatus">Consultando ${saved.length} títulos…</h2>
+    <div class="results">${saved.map(x => `<div class="result"><div class="ph skel"></div>
+      <div style="flex:1"><div class="skel" style="height:14px;width:55%"></div></div></div>`).join('')}</div>`;
+
+  const token = ++listSeq;
+  let items;
+  try {
+    items = await loadSaved((done, total) => {
+      if (token !== listSeq) return;
+      const el = $('#listStatus');
+      if (el && done < total) el.textContent = `Consultando ${done} de ${total}…`;
+    });
+  } catch {
+    if (token === listSeq) view.innerHTML = `<button class="back" type="button" data-back>‹ Voltar</button>` + errorHtml('Não consegui montar sua lista agora.');
+    return;
+  }
+  if (token !== listSeq) return;
+
+  const plan = planForList(items, owned);
+  const ready = plan.ready.length;
+  view.innerHTML = `<button class="back" type="button" data-back>‹ Voltar</button>
+    <h2 class="label">Minha lista · ${items.length} ${items.length === 1 ? 'título' : 'títulos'}${ready ? ` · ${ready} para assistir agora` : ''}</h2>
+    ${planHtml(plan)}
+    <section class="group"><h2 class="label">Todos</h2>
+      <div class="results">${items.map(savedCardHtml).join('')}</div></section>`;
+}
+
 // ---------------------------------------------------------------- routing & events
 
 function route() {
   const path = decodeURIComponent(location.hash.slice(1));
+  // Drop the old title first: the save button reads `current`, and for one tick after a hash
+  // change the previous page is still on screen. Without this, a tap in that window would
+  // save the title you just navigated away from.
+  if (!current || current.path !== path) current = null;
   if (path.startsWith('/br/')) {
     renderTitle(path);
+  } else if (path === '/lista') {
+    current = null;
+    renderList();
   } else {
     current = null;
     if (input.value.trim().length >= 2) renderSearch(input.value.trim());
@@ -570,9 +716,27 @@ $('#clear').addEventListener('click', () => {
 });
 
 view.addEventListener('click', async e => {
-  const t = e.target.closest('[data-back],[data-refresh],[data-share],[data-retry],[data-retry-search],[data-open-mine],.result');
+  const drop = e.target.closest('[data-drop]');
+  if (drop) {
+    e.preventDefault();
+    toggleSaved(drop.getAttribute('data-drop'));
+    renderList();
+    return;
+  }
+  const t = e.target.closest('[data-back],[data-refresh],[data-share],[data-retry],[data-retry-search],[data-open-mine],[data-save],.result');
   if (!t) return;
   if (t.matches('.result')) { input.blur(); return; }
+  if (t.hasAttribute('data-save') && current) {
+    const c = current.node.content;
+    const now = toggleSaved(current.path, {
+      title: displayTitle(c), poster: c.posterUrl, year: c.originalReleaseYear,
+      isShow: current.node.objectType === 'SHOW',
+    });
+    t.classList.toggle('on', now);
+    t.innerHTML = `<span class="star">${now ? '★' : '☆'}</span>${now ? 'Na minha lista' : 'Salvar na minha lista'}`;
+    toast(now ? 'Salvo na sua lista' : 'Tirado da lista');
+    return;
+  }
   if (t.hasAttribute('data-back')) {
     // Go back if we navigated here inside the app; a shared link opened cold goes home.
     if (sessionStorage.getItem('oa:inapp')) history.back();
@@ -629,6 +793,7 @@ addEventListener('hashchange', () => { sessionStorage.setItem('oa:inapp', '1'); 
 
 pruneCache();
 renderMineCount();
+renderSavedCount();
 route();
 getBridge().catch(() => {});   // warm up so the first search is quick
 

@@ -132,7 +132,8 @@ export function displayTitle(content) {
 export function indexPackages(packages) {
   const map = new Map();
   for (const p of packages || []) {
-    let monthly = null, trialDays = null;
+    let trialDays = null;
+    const monthlies = [];
     for (const o of p.planOffers || []) {
       const v = o.retailPriceValue, d = o.durationDays;
       if (o.isTrial) { if (d && d <= 31) trialDays = Math.max(trialDays || 0, d); continue; }
@@ -140,8 +141,17 @@ export function indexPackages(packages) {
       // understates it by about four times, so anything not in reais is ignored.
       if (o.currency && o.currency !== 'BRL') continue;
       if (v == null || d == null || d < 28 || d > 31 || v < 3 || v > 250) continue;
-      if (monthly == null || v < monthly) monthly = v;
+      monthlies.push(v);
     }
+    // A service whose plans disagree wildly is a service whose price we do not know.
+    // In October 2026 Disney+ listed R$ 9,90 next to R$ 46,90 — a two-month promotion that
+    // would have been shown as "a partir de" three days before it expired. Belas Artes
+    // listed R$ 12,90 next to R$ 141, where the expensive one is the mislabelled one.
+    // With two numbers there is no telling which is the odd one, so rather than pick wrong
+    // we show no price. The answer the app exists to give does not depend on it.
+    monthlies.sort((a, b) => a - b);
+    const trustworthy = monthlies.length < 2 || monthlies[0] >= monthlies[1] * 0.5;
+    const monthly = trustworthy && monthlies.length ? monthlies[0] : null;
     map.set(p.packageId, {
       id: p.packageId,
       name: p.clearName,
@@ -327,4 +337,68 @@ export function summarize(b) {
   if (b.rent.length || b.buy.length) return { tone: 'money', kind: b.rent.length ? 'rent' : 'buy', from: tx.length ? Math.min(...tx) : null };
   if (b.cinema.length) return { tone: 'money', kind: 'cinema', names: names(b.cinema) };
   return { tone: 'bad', kind: 'none' };
+}
+
+/**
+ * What a saved list is worth: which titles you can already watch, which single subscription
+ * would unlock the most of the rest, and what is about to disappear.
+ *
+ * @param items [{ path, title, buckets }] — buckets from classify()
+ * @param owned Set of serviceKey()s the user subscribes to
+ */
+export function planForList(items, owned = new Set()) {
+  const own = new Set(owned);
+  if (own.has('globoplaypremium')) own.add('globoplay');
+
+  const ready = [];      // already covered by something you pay for, or free
+  const missing = [];    // needs a subscription you don't have
+  const payPer = [];     // only rent/buy/cinema
+  const gone = [];       // not in Brazil at all
+  const leaving = [];    // disappearing soon, from a service you have
+
+  const soon = (iso) => {
+    if (!iso) return null;
+    const days = Math.ceil((new Date(iso + 'T23:59:59-03:00') - Date.now()) / 864e5);
+    return days >= 0 && days <= 45 ? days : null;
+  };
+
+  for (const it of items) {
+    const b = it.buckets;
+    if (!b) continue;
+    const subs = [...b.included, ...b.extra, ...b.free];
+    const mine = subs.filter(r => r.owned || r.bucket === 'free');
+
+    if (mine.length) {
+      ready.push({ ...it, via: mine });
+      for (const r of mine) {
+        const d = soon(r.leavingOn);
+        if (d != null) leaving.push({ ...it, service: r.name, days: d, on: r.leavingOn });
+      }
+    } else if (subs.length) {
+      missing.push({ ...it, options: subs });
+    } else if (b.rent.length || b.buy.length || b.cinema.length) {
+      payPer.push(it);
+    } else {
+      gone.push(it);
+    }
+  }
+
+  // One row per service across everything you can't yet watch, cheapest-first within a tie.
+  const tally = new Map();
+  for (const it of missing) {
+    const seen = new Set();
+    for (const r of it.options) {
+      if (seen.has(r.key)) continue;   // same service twice on one title counts once
+      seen.add(r.key);
+      const e = tally.get(r.key) || { key: r.key, name: r.name, host: r.host, kind: r.kind, monthly: perMonth(r), titles: [] };
+      if (e.monthly == null) e.monthly = perMonth(r);
+      e.titles.push(it.title);
+      tally.set(r.key, e);
+    }
+  }
+  const best = [...tally.values()]
+    .sort((a, c) => c.titles.length - a.titles.length || ((a.monthly ?? 1e9) - (c.monthly ?? 1e9)) || a.name.localeCompare(c.name, 'pt-BR'));
+
+  leaving.sort((a, c) => a.days - c.days);
+  return { ready, missing, payPer, gone, leaving, best, total: items.length };
 }

@@ -186,6 +186,12 @@ for (const [, p] of pkgs) {
   if (p.monthly != null && (p.monthly < 3 || p.monthly > 200)) {
     warn(`implausible monthly price for ${p.name}`, `R$ ${p.monthly} — indexPackages should be filtering this out`);
   }
+  // Services whose plan prices disagree wildly show no price at all. Listing them keeps that
+  // visible: if a familiar service appears here, JustWatch's data for it is worth a look.
+  const real = (p.plans || []).filter(x => x.days >= 28 && x.days <= 31 && x.value > 3 && x.value < 250).map(x => x.value).sort((a, b) => a - b);
+  if (real.length > 1 && real[0] < real[1] * 0.5) {
+    warn(`no price shown for ${p.name}`, `its plans disagree (R$ ${real[0]} vs R$ ${real[1]}) — one of them is a promotion or mislabelled`);
+  }
 }
 
 // ---------------------------------------------------------------- 5. what the app would say
